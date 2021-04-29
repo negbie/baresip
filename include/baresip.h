@@ -193,6 +193,7 @@ int  call_progress(struct call *call);
 void call_hangup(struct call *call, uint16_t scode, const char *reason);
 int  call_modify(struct call *call);
 int  call_hold(struct call *call, bool hold);
+int  call_conference(struct call *call, bool conference);
 int  call_set_video_dir(struct call *call, enum sdp_dir dir);
 int  call_send_digit(struct call *call, char key);
 bool call_has_audio(const struct call *call);
@@ -1279,6 +1280,8 @@ int  audio_start_source(struct audio *a, struct list *ausrcl,
 void audio_stop(struct audio *a);
 bool audio_started(const struct audio *a);
 void audio_set_hold(struct audio *au, bool hold);
+int  audio_set_conference(struct audio *au, bool conference);
+bool audio_is_conference(const struct audio *au);
 int  audio_encoder_set(struct audio *a, const struct aucodec *ac,
 		       int pt_tx, const char *params);
 int  audio_decoder_set(struct audio *a, const struct aucodec *ac,
