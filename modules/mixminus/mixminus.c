@@ -21,8 +21,7 @@ enum {
 struct mix {
 	struct aubuf *ab;
 	const struct audio *au;
-	uint32_t srate;
-	uint8_t ch;
+	struct aufilt_prm prm;
 	bool ready;
 	struct le le_priv;
 };
@@ -34,9 +33,9 @@ struct mixminus_enc {
 	struct list mixers;
 	int16_t *sampv;
 	int16_t *rsampv;
+	int16_t *fsampv;
 	struct auresamp resamp;
-	uint32_t srate;
-	uint8_t ch;
+	struct aufilt_prm prm;
 	struct le le_priv;
 };
 
@@ -44,6 +43,8 @@ struct mixminus_dec {
 	struct aufilt_dec_st af;  /* inheritance */
 
 	const struct audio *au;
+	int16_t *fsampv;
+	struct aufilt_prm prm;
 };
 
 static struct list encs;
@@ -59,6 +60,7 @@ static void enc_destructor(void *arg)
 	list_flush(&st->mixers);
 	mem_deref(st->sampv);
 	mem_deref(st->rsampv);
+	mem_deref(st->fsampv);
 	list_unlink(&st->le_priv);
 
 	for (le = list_head(&encs); le; le = le->next) {
@@ -82,6 +84,11 @@ static void enc_destructor(void *arg)
 	}
 }
 
+static void dec_destructor(void *arg)
+{
+	struct mixminus_dec *st = arg;
+	mem_deref(st->fsampv);
+}
 
 static void mix_destructor(void *arg)
 {
@@ -104,11 +111,6 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 	if (!stp || !ctx || !prm)
 		return EINVAL;
 
-	if (prm->fmt != AUFMT_S16LE) {
-		warning("mixminus: Only S16LE is supported.\n");
-		return EINVAL;
-	}
-
 	if (*stp)
 		return 0;
 
@@ -126,9 +128,12 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 	if (!st->rsampv)
 		return ENOMEM;
 
+	st->fsampv = mem_zalloc(psize, NULL);
+	if (!st->fsampv)
+		return ENOMEM;
+
+	st->prm = *prm;
 	st->au = au;
-	st->ch = prm->ch;
-	st->srate = prm->srate;
 	auresamp_init(&st->resamp);
 
 	list_append(&encs, &st->le_priv, st);
@@ -144,14 +149,12 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 		mix = mem_zalloc(sizeof(*mix), mix_destructor);
 		if (!mix)
 			return ENOMEM;
-		psize = st->srate * st->ch * 20 / 1000;
+		psize = st->prm.srate * st->prm.ch * 20 / 1000;
 		err = aubuf_alloc(&mix->ab, psize, 5 * psize);
 		if (err)
 			return err;
 
 		mix->au = st->au; /* using audio object as id */
-		mix->srate = st->srate;
-		mix->ch = st->ch;
 		mix->ready = false;
 
 		list_append(&enc->mixers, &mix->le_priv, mix);
@@ -169,14 +172,12 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 		if (!mix)
 			return ENOMEM;
 
-		psize = enc->srate * enc->ch * 20 / 1000;
+		psize = enc->prm.srate * enc->prm.ch * 20 / 1000;
 		err = aubuf_alloc(&mix->ab, psize, 5 * psize);
 		if (err)
 			return err;
 
 		mix->au = enc->au; /* using audio object as id */
-		mix->srate = enc->srate;
-		mix->ch = enc->ch;
 		mix->ready = false;
 
 		list_append(&st->mixers, &mix->le_priv, mix);
@@ -193,25 +194,28 @@ static int decode_update(struct aufilt_dec_st **stp, void **ctx,
 			 const struct audio *au)
 {
 	struct mixminus_dec *st;
+	size_t psize;
 	(void)af;
 	(void)prm;
 
 	if (!stp || !ctx)
 		return EINVAL;
 
-	if (prm->fmt != AUFMT_S16LE) {
-		warning("mixminus: Only S16LE is supported.\n");
-		return EINVAL;
-	}
-
 	if (*stp)
 		return 0;
 
-	st = mem_zalloc(sizeof(*st), NULL);
+	st = mem_zalloc(sizeof(*st), dec_destructor);
 	if (!st)
 		return ENOMEM;
 
+	psize = AUDIO_SAMPSZ * sizeof(int16_t);
+
+	st->fsampv = mem_zalloc(psize, NULL);
+	if (!st->fsampv)
+		return ENOMEM;
+
 	st->au = au;
+	st->prm = *prm;
 
 	*stp = (struct aufilt_dec_st *)st;
 
@@ -223,9 +227,10 @@ static void read_samp(struct aubuf *ab, int16_t *sampv, size_t sampc,
 		      size_t stime)
 {
 	size_t i;
+	size_t psize = sampc * 2;
 
 	for (i = 0; i < stime - 1; i++) {
-		if (aubuf_cur_size(ab) < sampc) {
+		if (aubuf_cur_size(ab) < psize) {
 			sys_msleep(1);
 		}
 		else {
@@ -248,7 +253,12 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	int32_t sample;
 	int err = 0;
 
-	stime = 1000 * af->sampc / (enc->srate * enc->ch);
+	stime = 1000 * af->sampc / (enc->prm.srate * enc->prm.ch);
+
+	if (enc->prm.fmt != AUFMT_S16LE) {
+		auconv_to_s16(enc->fsampv, enc->prm.fmt, af->sampv, af->sampc);
+		sampv = enc->fsampv;
+	}
 
 	for (lem = list_head(&enc->mixers); lem; lem = lem->next) {
 		mix = lem->data;
@@ -263,8 +273,8 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 			continue;
 		}
 
-		err = auresamp_setup(&enc->resamp, mix->srate, mix->ch,
-				     enc->srate, enc->ch);
+		err = auresamp_setup(&enc->resamp, mix->prm.srate, mix->prm.ch,
+				     enc->prm.srate, enc->prm.ch);
 		if (err) {
 			warning("mixminus/auresamp_setup error (%m)\n", err);
 			return err;
@@ -274,18 +284,18 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 			outc = AUDIO_SAMPSZ;
 			sampv_mix = enc->rsampv;
 
-			if (enc->srate > mix->srate) {
+			if (enc->prm.srate > mix->prm.srate) {
 				inc = af->sampc / enc->resamp.ratio;
 			}
 			else {
 				inc = af->sampc * enc->resamp.ratio;
 			}
 
-			if (enc->ch == 2 && mix->ch == 1) {
+			if (enc->prm.ch == 2 && mix->prm.ch == 1) {
 				inc = inc / 2;
 			}
 
-			if (enc->ch == 1 && mix->ch == 2) {
+			if (enc->prm.ch == 1 && mix->prm.ch == 2) {
 				inc = inc * 2;
 			}
 
@@ -319,6 +329,11 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 		}
 	}
 
+	if (enc->prm.fmt != AUFMT_S16LE) {
+		auconv_from_s16(enc->prm.fmt, af->sampv, sampv,
+				af->sampc);
+	}
+
 	return err;
 }
 
@@ -330,7 +345,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	struct le *le;
 	struct le *lem;
 	struct mix *mix;
-	size_t num_bytes = auframe_size(af);
+	int16_t *sampv;
 
 	for (le = list_head(&encs); le; le = le->next) {
 		enc = le->data;
@@ -346,7 +361,18 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (!mix->ready)
 				continue;
 
-			aubuf_write(mix->ab, af->sampv, num_bytes);
+			mix->prm.ch = dec->prm.ch;
+			mix->prm.srate = dec->prm.srate;
+
+			sampv = af->sampv;
+
+			if (dec->prm.fmt != AUFMT_S16LE) {
+				sampv = dec->fsampv;
+				auconv_to_s16(sampv, dec->prm.fmt,
+					      (void *)af->sampv, af->sampc);
+			}
+
+			aubuf_write_samp(mix->ab, sampv, af->sampc);
 		}
 	}
 
@@ -394,15 +420,17 @@ static int debug_conference(struct re_printf *pf, void *arg)
 			continue;
 
 		info("mixminus/enc au %x:"
-		     "ch %d srate %d, is_conference (%s)\n",
-		     enc->au, enc->ch, enc->srate,
+		     "ch %d srate %d fmt %s, is_conference (%s)\n",
+		     enc->au, enc->prm.ch, enc->prm.srate,
+		     aufmt_name(enc->prm.fmt),
 		     audio_is_conference(enc->au) ? "true" : "false");
 
 		for (lem = list_head(&enc->mixers); lem; lem = lem->next) {
 			mix = lem->data;
 
 			info("\tmix au %x: ch %d srate %d %H\n", mix->au,
-			     mix->ch, mix->srate, aubuf_debug, mix->ab);
+			     mix->prm.ch, mix->prm.srate, aubuf_debug,
+			     mix->ab);
 		}
 	}
 
