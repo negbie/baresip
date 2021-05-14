@@ -352,6 +352,7 @@ static int enable_conference(struct re_printf *pf, void *arg)
 	struct le *le, *lec;
 	struct call *call;
 	struct ua *ua;
+	struct audio *au;
 	(void)pf;
 	(void)arg;
 
@@ -363,7 +364,8 @@ static int enable_conference(struct re_printf *pf, void *arg)
 			call = lec->data;
 			info("conference with %s\n", call_peeruri(call));
 			call_hold(call, false);
-			call_conference(call, true);
+			au = call_audio(call);
+			audio_set_conference(au, true);
 		}
 	}
 

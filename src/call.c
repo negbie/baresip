@@ -1244,25 +1244,6 @@ int call_hold(struct call *call, bool hold)
 
 
 /**
- * Switch call to conference or not
- *
- * @param call        Call object
- * @param conference  True for confernce, false for not
- *
- * @return 0 if success, otherwise errorcode
- */
-int call_conference(struct call *call, bool conference)
-{
-	struct audio *au = call_audio(call);
-
-	if (!au)
-		return EINVAL;
-
-	return audio_set_conference(au, conference);
-}
-
-
-/**
  * Sets the video direction of the given call
  *
  * @param call  Call object
