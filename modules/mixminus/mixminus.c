@@ -152,6 +152,8 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 		mix->au = st->au; /* using audio object as id */
 		mix->srate = st->srate;
 		mix->ch = st->ch;
+		mix->ready = false;
+
 		list_append(&enc->mixers, &mix->le_priv, mix);
 	}
 
@@ -175,6 +177,8 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 		mix->au = enc->au; /* using audio object as id */
 		mix->srate = enc->srate;
 		mix->ch = enc->ch;
+		mix->ready = false;
+
 		list_append(&st->mixers, &mix->le_priv, mix);
 	}
 
@@ -254,7 +258,10 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 		if (!audio_is_conference(mix->au))
 			continue;
 
-		mix->ready = true;
+		if (!mix->ready) {
+			mix->ready = true;
+			continue;
+		}
 
 		err = auresamp_setup(&enc->resamp, mix->srate, mix->ch,
 				     enc->srate, enc->ch);
@@ -394,8 +401,8 @@ static int debug_conference(struct re_printf *pf, void *arg)
 		for (lem = list_head(&enc->mixers); lem; lem = lem->next) {
 			mix = lem->data;
 
-			info("\tmix au %x: ch %d srate %d %H\n", mix->au, mix->ch,
-			     mix->srate, aubuf_debug, mix->ab);
+			info("\tmix au %x: ch %d srate %d %H\n", mix->au,
+			     mix->ch, mix->srate, aubuf_debug, mix->ab);
 		}
 	}
 
